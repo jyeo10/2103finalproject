@@ -1,0 +1,274 @@
+---
+title: "2103 Final Project - Justin Yeo"
+author: "J.Yeo"
+date: "12/13/2022"
+output: html_document
+---
+#Article Link:
+https://educationaldatamining.org/files/conferences/EDM2020/papers/paper_95.pdf
+
+
+#Code for organizing data for data visualization. Graph was eventually created in Excel.
+```{r}
+library(magrittr)
+library(caret)
+library(randomForest)
+library(dplyr)
+library("MLmetrics")
+
+df <- read.csv('FinalProject/reengagement_general.csv')
+df$time.0 <- df$X0
+df$time.1 <- df$X1
+data <- df %>% select(-user_id, -X, -X0, -X1, -X2, -X3, -X4)
+
+#normalize the data by min-max scaling, as was done in the paper:
+process <- preProcess(as.data.frame(data), method=c("range"))
+reengagement_data <- predict(process, as.data.frame(data))
+
+notreengaged <- reengagement_data %>% filter(reengaged==0)
+reengaged <- reengagement_data %>% filter(reengaged==1)
+
+
+questionsasked <- sum(notreengaged$nask.0, notreengaged$nask.1)
+HWtoolsused <- sum(notreengaged$nhw_tools.0, notreengaged$nhw_tools.1)
+lessonsfinished <- sum(notreengaged$nlessonsfinished.0, notreengaged$nlessonsfinished.1)
+quizresultsviewed <- sum(notreengaged$nsummary.0, notreengaged$nsummary.1)
+avgsolvetime <- sum(notreengaged$avg_solve_time.0, notreengaged$avg_solve_time.1)
+quizzescompleted <- sum(notreengaged$n_quizzes.0, notreengaged$n_quizzes.1)
+uniquequizzescompleted <- sum(notreengaged$n_unique_quizzes.0, notreengaged$n_unique_quizzes.1)
+timespent <- sum(notreengaged$time.0, notreengaged$time.1)
+
+
+questionsasked1 <- sum(reengaged$nask.0, reengaged$nask.1)
+HWtoolsused1 <- sum(reengaged$nhw_tools.0, reengaged$nhw_tools.1)
+lessonsfinished1 <- sum(reengaged$nlessonsfinished.0, reengaged$nlessonsfinished.1)
+quizresultsviewed1 <- sum(reengaged$nsummary.0, reengaged$nsummary.1)
+avgsolvetime1 <- sum(reengaged$avg_solve_time.0, reengaged$avg_solve_time.1)
+quizzescompleted1 <- sum(reengaged$n_quizzes.0, reengaged$n_quizzes.1)
+uniquequizzescompleted1 <- sum(reengaged$n_unique_quizzes.0, reengaged$n_unique_quizzes.1)
+timespent1 <- sum(reengaged$time.0, reengaged$time.1)
+
+variables <- c(questionsasked, HWtoolsused, lessonsfinished, quizresultsviewed, avgsolvetime, quizzescompleted, uniquequizzescompleted, timespent)
+
+variables1 <- c(questionsasked1, HWtoolsused1, lessonsfinished1, quizresultsviewed1, avgsolvetime1, quizzescompleted1, uniquequizzescompleted1, timespent1)
+
+data <- cbind(variables, variables1)
+print(data)
+#Graph for visualization was generated on Microsoft Excel (Refer to submitted Excel workbook, if needed).
+```
+
+
+
+#Reproducing the Random Forest (RF) Model:
+```{r}
+set.seed(17) #Setting a random seed to be used throughout this project. 
+
+k <- 5
+n <- nrow(reengagement_data)
+folds <- sample(k, n, replace=TRUE)
+
+
+is_train <- folds != k
+is_test <- !is_train
+train_df_raw <- reengagement_data[is_train, ] 
+test_df <- reengagement_data[is_test, ] 
+
+#undersampling the train_df to balance out the label distribution, as done in the paper
+train_df0 <- train_df_raw %>% filter(train_df_raw$reengaged == 0)
+train_df1 <- train_df_raw %>% filter(train_df_raw$reengaged == 1)
+newtrain_df0 <- train_df0[sample(nrow(train_df0), nrow(train_df1)), ]
+  
+#Our undersampled train_df:
+train_df <- rbind(newtrain_df0, train_df1)
+
+rf <- randomForest(as.factor(reengaged)~., data=train_df,
+                   ntree = 1000,       # number of trees (from paper)
+                   mtry = 2,          # number of variables tried at each split (from paper)
+                   importance = TRUE)
+
+prediction <- predict(rf, test_df)
+matrix <- confusionMatrix(prediction, as.factor(test_df$reengaged), mode = 'everything', positive = "0")
+varImpPlot(rf,
+           sort = T,
+           n.var = 16,
+           main = "Gini Importance")
+
+#Now, we will calculate the F1 score of our model and see if it is close to what the paper has. 
+
+F1_Score(prediction, test_df$reengaged, positive = 0) 
+#We define positive = 0 because the paper says that a "True positive" is a student that disengages (or remains disengaged)
+
+#Our F1 score of 81.08% is very close to the paper's F1 score of 80.91%. The slight difference in percentages is likely due to the fact that we used a different seed compared to what the authors used in their paper. 
+
+#However, the ranking of feature importance that we obtained here is slightly different than the ranking of feature importance that the authors obtained. This difference in rankings might be attributable to the high correlation between “n_quizzes.0” and “time.0” (~73% — the highest between any two features) that might cause the model to prefer one over the other during different runs because depending on what is sampled during the training of the individual trees, it is possible to get different feature weights. It may also be the case that the Python implementation (which was used by the authors) has a different optimizer, or that there were some parameters used in the authors’ model that were not explicitly mentioned in the paper, both of which could result in the slight difference in rankings.
+cor(train_df$n_quizzes.0, train_df$time.0)
+```
+
+
+
+#Evaluating the Results
+```{r}
+#Method 1A: Removing features from the dataset to test the result's sensitivity to data. 
+
+#To test if the lowest importance features are indeed the least important, we will remove the bottom 6 features with the lowest Gini Importance, according to the paper's results, and rerun the model with that as our dataset. 
+df <- read.csv('FinalProject/reengagement_general.csv')
+df$time.0 <- df$X0
+df$time.1 <- df$X1
+data <- df %>% select(-user_id, -X, -X0, -X1, -X2, -X3, -X4, -nask.0, -nask.1, -nhw_tools.0, -nhw_tools.1, -nsummary.1, -nlessonsfinished.1)
+
+process <- preProcess(as.data.frame(data), method=c("range"))
+reengagement_data <- predict(process, as.data.frame(data))
+
+set.seed(17) 
+
+k <- 5
+folds <- sample(k, n, replace=TRUE)
+n <- nrow(reengagement_data)
+
+is_train <- folds != k
+is_test <- !is_train
+train_df_raw <- reengagement_data[is_train, ] 
+test_df <- reengagement_data[is_test, ] 
+
+#undersampling the train_df to balance out the label distribution, as done in the paper
+train_df0 <- train_df_raw %>% filter(train_df_raw$reengaged == 0)
+train_df1 <- train_df_raw %>% filter(train_df_raw$reengaged == 1)
+newtrain_df0 <- train_df0[sample(nrow(train_df0), nrow(train_df1)), ]
+  
+#Our undersampled train_df:
+train_df <- rbind(newtrain_df0, train_df1)
+
+rf <- randomForest(as.factor(reengaged)~., data=train_df,
+                   ntree = 1000,       
+                   mtry = 2,          
+                   importance = TRUE)
+
+prediction <- predict(rf, test_df)
+matrix <- confusionMatrix(prediction, as.factor(test_df$reengaged), positive = "0")
+varImpPlot(rf,
+           sort = T,
+           n.var = 10,
+           main = "Gini Importance")
+
+F1_Score(prediction, test_df$reengaged, positive = 0) 
+
+#Here, we see that with the same seed, after removing 6 features from our data, we have a F1 score of 81.21%, which is higher than the F1 score reported in the paper (80.91%), and higher than the percentage we had with all the features (81.08%), using the same seed. This indicates that the features that were removed were actually more noisy than useful. Furthermore, 5 of the 6 least important features as deemed in the paper were also ranked in the bottom 6 in the RF model in R, although the order of the features differed slightly. 
+```
+
+
+
+```{r}
+#Method 1B: Now, we try removing "n_quizzes.0", which is the most important feature as determined by the RF model in R, and the second most important feature as determined in the paper. 
+
+df <- read.csv('FinalProject/reengagement_general.csv')
+df$time.0 <- df$X0
+df$time.1 <- df$X1
+data <- df %>% select(-user_id, -X, -X0, -X1, -X2, -X3, -X4, -n_quizzes.0)
+
+process <- preProcess(as.data.frame(data), method=c("range"))
+reengagement_data <- predict(process, as.data.frame(data))
+
+set.seed(17)
+
+k <- 5
+folds <- sample(k, n, replace=TRUE)
+n <- nrow(reengagement_data)
+
+is_train <- folds != k
+is_test <- !is_train
+train_df_raw <- reengagement_data[is_train, ] 
+test_df <- reengagement_data[is_test, ] 
+
+#undersampling the train_df to balance out the label distribution, as done in the paper
+train_df0 <- train_df_raw %>% filter(train_df_raw$reengaged == 0)
+train_df1 <- train_df_raw %>% filter(train_df_raw$reengaged == 1)
+newtrain_df0 <- train_df0[sample(nrow(train_df0), nrow(train_df1)), ]
+  
+#Our undersampled train_df:
+train_df <- rbind(newtrain_df0, train_df1)
+
+rf <- randomForest(as.factor(reengaged)~., data=train_df,
+                   ntree = 1000,       # number of trees (from paper)
+                   mtry = 2,          # number of variables tried at each split (from paper)
+                   importance = TRUE)
+
+prediction <- predict(rf, test_df)
+matrix <- confusionMatrix(prediction, as.factor(test_df$reengaged), positive = "0")
+varImpPlot(rf,
+           sort = T,
+           n.var = 15,
+           main = "Gini Importance")
+
+F1_Score(prediction, test_df$reengaged, positive = 0) 
+
+#Here, we see that there is a pretty significant decrease in the F1 score, from 80.91% in the paper and 81.21% from the reproduced RF, to 78.14%, indicating that the feature removed is indeed an important feature in predicting reengagement, since the accuracy of the model significantly decreased when it is removed. This further validates the credibility of the importance ranking of the RF model. 
+```
+
+
+
+```{r}
+#Method 2: Fitting a logistic regression model instead of a Random Forest model to test the result's sensitivity to model choice. 
+
+df <- read.csv('FinalProject/reengagement_general.csv')
+df$time.0 <- df$X0
+df$time.1 <- df$X1
+data <- df %>% select(-user_id, -X, -X0, -X1, -X2, -X3, -X4)
+
+process <- preProcess(as.data.frame(data), method=c("range"))
+reengagement_data <- predict(process, as.data.frame(data))
+
+set.seed(17)
+
+k <- 5
+folds <- sample(k, n, replace=TRUE)
+n <- nrow(reengagement_data)
+
+is_train <- folds != k
+is_test <- !is_train
+train_df_raw <- reengagement_data[is_train, ] 
+test_df <- reengagement_data[is_test, ] 
+
+train_df0 <- train_df_raw %>% filter(train_df_raw$reengaged == 0)
+train_df1 <- train_df_raw %>% filter(train_df_raw$reengaged == 1)
+newtrain_df0 <- train_df0[sample(nrow(train_df0), nrow(train_df1)), ]
+  
+train_df <- rbind(newtrain_df0, train_df1)
+
+logmodel <- glm(reengaged ~., family = binomial(link = 'logit'), train_df)
+summary(logmodel)
+
+test_df$is_reengaged <- test_df$reengaged > 0  
+pred_resp <- predict(logmodel, newdata = test_df, type="response")
+
+threshold <- 0.5 
+
+actual_pred <- pred_resp >= threshold
+table <- table(as.factor(actual_pred), as.factor(test_df$is_reengaged))
+logmodelmatrix <- confusionMatrix(table, mode = 'everything')
+logmodelmatrix$byClass[7]
+#We see that our F1 score using the logistic regression model is 78.03%, which is considerably less than the F1 score of 81.08% that was produced by the reproduced RF model in R, and also less than the F1 score of 80.91% that was produced in the paper. This implies that the RF model is more powerful and accurate than the logistic regression model in classifying this data. 
+
+imp <- as.data.frame(varImp(logmodel))
+imp <- data.frame(overall = imp$Overall,
+           names = rownames(imp))
+imp[order(imp$overall,decreasing = T),]
+#Furthermore, as seen in the order of feature importance, very different rankings are obtained compared to the reproduced RF model. While n_quizzes.0 is still the most important feature, the subsequent features are in a very different order compared to the rankings seen from the RF model. This further brings into question the model's credibility.
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
